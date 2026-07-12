@@ -5,41 +5,70 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Equipon — Hospitality Management</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.33.0/dist/tabler-icons.min.css">
-  <!-- Firebase SDK -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  <!-- Firebase REST API (no module imports needed) -->
+  <script>
+    const _FB_PROJECT = 'equipon-6cddd';
+    const _FB_APIKEY  = 'AIzaSyDkCkS_SfZ8zH26sWNa8bGZ2x5zNNs3rfE';
+    const _FB_URL     = `https://firestore.googleapis.com/v1/projects/${_FB_PROJECT}/databases/(default)/documents/equipon/state`;
 
-    // ── PASTE YOUR FIREBASE CONFIG HERE ──────────────────────────────────
-    const firebaseConfig = {
-      apiKey: "AIzaSyDkCkS_SfZ8zH26sWNa8bGZ2x5zNNs3rfE",
-      authDomain: "equipon-6cddd.firebaseapp.com",
-      projectId: "equipon-6cddd",
-      storageBucket: "equipon-6cddd.firebasestorage.app",
-      messagingSenderId: "288726542187",
-      appId: "1:288726542187:web:30cd1fbb16e59f07840e2e"
-    };
-    // ─────────────────────────────────────────────────────────────────────
+    // Read from Firestore
+    async function fbRead(){
+      try{
+        const r = await fetch(`${_FB_URL}?key=${_FB_APIKEY}`);
+        if(!r.ok) return null;
+        const d = await r.json();
+        if(!d.fields || !d.fields.state) return null;
+        // Firestore REST returns values as {stringValue: "..."} — parse the JSON string
+        const raw = d.fields.state.stringValue;
+        return raw ? JSON.parse(raw) : null;
+      } catch(e){ console.warn('fbRead error:', e); return null; }
+    }
 
-    const app  = initializeApp(firebaseConfig);
-    const db   = getFirestore(app);
-    const DOC  = doc(db, 'equipon', 'state');
+    // Write to Firestore
+    async function fbWrite(stateObj){
+      try{
+        const body = {
+          fields: {
+            state: { stringValue: JSON.stringify(stateObj) },
+            updatedAt: { integerValue: String(Date.now()) }
+          }
+        };
+        await fetch(`${_FB_URL}?key=${_FB_APIKEY}`, {
+          method: 'PATCH',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(body)
+        });
+      } catch(e){ console.warn('fbWrite error:', e); }
+    }
 
-    // Expose to global scope for use in the rest of the app
-    window._fbDb  = db;
-    window._fbDoc = DOC;
-    window._fbGetDoc    = getDoc;
-    window._fbSetDoc    = setDoc;
-    window._fbOnSnapshot = onSnapshot;
+    // Poll for changes every 15 seconds (simple sync without WebSockets)
+    let _fbLastUpdate = 0;
+    function startFbPoll(){
+      setInterval(async ()=>{
+        try{
+          const r = await fetch(`${_FB_URL}?key=${_FB_APIKEY}&fields=fields.updatedAt`);
+          if(!r.ok) return;
+          const d = await r.json();
+          const ts = parseInt(d.fields?.updatedAt?.integerValue||0);
+          if(ts > _fbLastUpdate && ts > 0){
+            _fbLastUpdate = ts;
+            const data = await fbRead();
+            if(data && JSON.stringify(data) !== JSON.stringify(ST)){
+              ST = data;
+              applyStateDefaults();
+              localStorage.setItem(SK, JSON.stringify(ST));
+              if(SESSION){ refreshCurrent(); badges(); }
+              console.log('🔄 Synced from Firestore');
+            }
+          }
+        } catch(e){}
+      }, 15000);
+    }
 
-    // Load initial state from Firestore
-    window._fbReady = getDoc(DOC).then(snap => {
-      if(snap.exists()){
-        window._fbInitialData = snap.data().state;
-      }
-    }).catch(e => {
-      console.warn('Firestore load error:', e);
-    });
+    // Load on startup
+    window._fbReady = fbRead().then(data => {
+      if(data) window._fbInitialData = data;
+    }).catch(()=>{});
   </script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1588,36 +1617,16 @@ function save(){
   try{ localStorage.setItem(SK, json); } catch(e){}
   _lastSavedJSON = json;
 
-  // Debounced Firestore write
+  // Debounced Firestore write via REST
   clearTimeout(_fbSaveTimeout);
   _fbSaveTimeout = setTimeout(()=>{
-    if(window._fbDoc && window._fbSetDoc){
-      window._fbSetDoc(window._fbDoc, { state: ST, updatedAt: Date.now() })
-        .catch(e => console.warn('Firestore save error:', e));
-    }
+    fbWrite(ST).catch(e => console.warn('Firestore save error:', e));
   }, 1200);
 }
 
-// ── Real-time sync: listen for changes from other devices/tabs ────────────
+// ── Real-time sync via polling ───────────────────────────────────────────
 function startFirestoreSync(){
-  if(!window._fbOnSnapshot || !window._fbDoc) return;
-  window._fbOnSnapshot(window._fbDoc, snap => {
-    if(!snap.exists()) return;
-    const incoming = JSON.stringify(snap.data().state);
-    if(incoming === _lastSavedJSON) return; // our own write — ignore
-    try{
-      ST = snap.data().state;
-      applyStateDefaults();
-      _lastSavedJSON = incoming;
-      localStorage.setItem(SK, incoming);
-      if(SESSION){
-        refreshCurrent();
-        badges();
-        if(isFB()){ checkPendingRequests(); checkPendingCounts(); }
-      }
-      console.log('🔄 Synced from Firestore');
-    } catch(e){ console.warn('Sync error:', e); }
-  });
+  startFbPoll();
 }
 
 // ── Cross-tab sync (localStorage fallback for same-browser tabs) ──────────
@@ -6926,8 +6935,12 @@ function rSettings(){
   // Firestore status
   const fsEl = document.getElementById('fsStatus');
   if(fsEl){
-    if(window._fbDoc) fsEl.innerHTML = '<span class="pill po">🟢 Firebase συνδεδεμένο</span>';
-    else fsEl.innerHTML = '<span class="pill pr">🔴 Firebase μη συνδεδεμένο — τοπική αποθήκευση</span>';
+    // Test connection
+    fbRead().then(d=>{
+      fsEl.innerHTML = '<span class="pill po">🟢 Firebase συνδεδεμένο</span>';
+    }).catch(()=>{
+      fsEl.innerHTML = '<span class="pill pr">🔴 Firebase μη συνδεδεμένο — τοπική αποθήκευση</span>';
+    });
   }
   document.getElementById('settFbPass').value = ST.fbPass;
   renderOutletPasswordsList();
