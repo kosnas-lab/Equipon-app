@@ -2188,8 +2188,10 @@ function rDashOutlet(){
     });
   });
 
-  // Damages recorded for their outlet(s)
-  const myDamages = ST.damages.filter(d=>myOutlets.includes(d.outlet));
+  // Damages recorded for their outlet(s) — current year only, past years stay in history
+  const curYear = new Date().getFullYear();
+  const myDamagesAll = ST.damages.filter(d=>myOutlets.includes(d.outlet));
+  const myDamages = myDamagesAll.filter(d=>extractYear(d.date)===curYear);
   const dmgQty = myDamages.reduce((s,d)=>s+n(d.qty),0);
   const dmgCost = myDamages.reduce((s,d)=>s+n(d.cost),0);
 
@@ -2206,7 +2208,7 @@ function rDashOutlet(){
 
   document.getElementById('kpis').innerHTML = `
     <div class="kcard"><div class="klbl">Αξία Εξοπλισμού</div><div class="kval g">${fe(equipVal)}</div><div class="ksub">${fm(equipQty)} τεμάχια · ${myOutlets.join(', ')}</div></div>
-    <div class="kcard"><div class="klbl">Φθορές / Απώλειες</div><div class="kval ${dmgQty>0?'r':''}">${fm(dmgQty)}</div><div class="ksub">${fe(dmgCost)} κόστος</div></div>
+    <div class="kcard"><div class="klbl">Φθορές / Απώλειες ${curYear}</div><div class="kval ${dmgQty>0?'r':''}">${fm(dmgQty)}</div><div class="ksub">${fe(dmgCost)} κόστος</div></div>
     <div class="kcard"><div class="klbl">Έλλειμμα Απογραφών</div><div class="kval ${deficitQty>0?'r':''}">${fm(deficitQty)}</div><div class="ksub">${fe(deficitVal)} αξία</div></div>
     <div class="kcard"><div class="klbl">Πλεόνασμα Απογραφών</div><div class="kval ${surplusQty>0?'i':''}">${fm(surplusQty)}</div><div class="ksub">${fe(surplusVal)} αξία</div></div>
   `;
@@ -2330,6 +2332,12 @@ function setBudget(year){
 }
 
 let _damagesViewYear = null;
+let _outletViewYear = null;
+
+function changeOutletViewYear(year){
+  _outletViewYear = parseInt(year);
+  rDash();
+}
 
 function seasonDaysElapsed(){
   const now = new Date();
@@ -2362,9 +2370,12 @@ function setSeasonDates(){
   sch(); toast('Περίοδος σεζόν ενημερώθηκε ✓'); renderOutletDamageRateCard();
 }
 
-function renderOutletDamageRateCard(){
+function renderOutletDamageRateCard(curYear){
   const wrap = document.getElementById('outletDamageRateCard');
   if(!wrap) return;
+  curYear = curYear || new Date().getFullYear();
+  if(_outletViewYear===null) _outletViewYear = curYear;
+  const viewYear = _outletViewYear;
   const grpColors = {BARS:'pi',RESTAURANTS:'po',STAFF:'pg',OTHER:'pw'};
   const season = seasonDaysElapsed();
 
@@ -2373,7 +2384,7 @@ function renderOutletDamageRateCard(){
     ST.items.forEach(i=>{
       totalHandled += outletOpenStock(i.id, outlet) + outletTotalCharged(i.id, outlet);
     });
-    const dmgs = ST.damages.filter(d=>d.outlet===outlet);
+    const dmgs = ST.damages.filter(d=>d.outlet===outlet && extractYear(d.date)===viewYear);
     const dmgQty = dmgs.reduce((s,d)=>s+n(d.qty),0);
     const dmgCost = dmgs.reduce((s,d)=>s+n(d.cost),0);
     const equipRate = totalHandled>0 ? (dmgQty/totalHandled*100) : null;
@@ -2428,9 +2439,17 @@ function renderOutletDamageRateCard(){
     </tr>`;
   }).join('');
 
+  const dmgYearsAll = new Set(ST.damages.map(d=>extractYear(d.date)).filter(Boolean));
+  const rangeYearsAll = [];
+  for(let y=curYear-2; y<=curYear+5; y++) rangeYearsAll.push(y);
+  const allYearsOpts = Array.from(new Set([...dmgYearsAll, ...rangeYearsAll, curYear])).sort((a,b)=>a-b);
+  const yearOptsHtml = allYearsOpts.map(y=>`<option value="${y}" ${y===viewYear?'selected':''}>${y}${y===curYear?' (τρέχον)':''}</option>`).join('');
+
   wrap.innerHTML = `<div class="card">
     <div class="stitle"><span><i class="ti ti-chart-bar"></i>Ποσοστό Φθοράς &amp; Διαχείρισης ανά Outlet</span></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;padding:10px 12px;background:var(--bg2);border-radius:var(--r)">
+      <div class="fg" style="margin-bottom:0"><label class="fl">Έτος</label>
+        <select class="fi" id="outletViewYearSel" style="width:120px" onchange="changeOutletViewYear(this.value)">${yearOptsHtml}</select></div>
       <div class="fg" style="margin-bottom:0"><label class="fl">Έναρξη σεζόν</label>
         <input class="fi" type="date" id="seasonStartInput" style="width:150px" value="${new Date().getFullYear()}-${ST.seasonStartMMDD}"></div>
       <div class="fg" style="margin-bottom:0"><label class="fl">Λήξη σεζόν</label>
@@ -2454,14 +2473,17 @@ function renderOutletDamageRateCard(){
   </div>`;
 }
 
-function renderOutletValueDamageTable(){
+function renderOutletValueDamageTable(curYear){
   const wrap = document.getElementById('outletValueDamageCard');
   if(!wrap) return;
+  curYear = curYear || new Date().getFullYear();
+  if(_outletViewYear===null) _outletViewYear = curYear;
+  const viewYear = _outletViewYear;
   const grpColors = {BARS:'pi',RESTAURANTS:'po',STAFF:'pg',OTHER:'pw'};
   const rows = OUTLETS_NO_WH().map(outlet=>{
     const value = ST.items.reduce((s,i)=>s+outletQty(i.id,outlet)*n(i.price),0);
     const qty = ST.items.reduce((s,i)=>s+outletQty(i.id,outlet),0);
-    const dmgs = ST.damages.filter(d=>d.outlet===outlet);
+    const dmgs = ST.damages.filter(d=>d.outlet===outlet && extractYear(d.date)===viewYear);
     const dmgQty = dmgs.reduce((s,d)=>s+n(d.qty),0);
     const dmgCost = dmgs.reduce((s,d)=>s+n(d.cost),0);
     const grp = Object.entries(OUTLET_GROUPS).find(([g,os])=>os.includes(outlet))?.[0]||'';
@@ -2495,13 +2517,21 @@ function renderOutletValueDamageTable(){
   </tr>`;
   }).join('');
 
+  const dmgYearsAll2 = new Set(ST.damages.map(d=>extractYear(d.date)).filter(Boolean));
+  const rangeYearsAll2 = [];
+  for(let y=curYear-2; y<=curYear+5; y++) rangeYearsAll2.push(y);
+  const allYearsOpts2 = Array.from(new Set([...dmgYearsAll2, ...rangeYearsAll2, curYear])).sort((a,b)=>a-b);
+  const yearOptsHtml2 = allYearsOpts2.map(y=>`<option value="${y}" ${y===viewYear?'selected':''}>${y}${y===curYear?' (τρέχον)':''}</option>`).join('');
+
   wrap.innerHTML = `<div class="card">
     <div class="stitle"><span><i class="ti ti-building-store"></i>Αξία &amp; Φθορές ανά Outlet</span>
-      <span style="font-size:11px;font-weight:400;color:var(--txt2)">live — ενημερώνεται αυτόματα μετά από κάθε έγκριση</span>
+      <span style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:400;color:var(--txt2)">
+        Φθορές έτους <select class="fi" id="outletValueYearSel" style="width:100px;height:26px;font-size:11px" onchange="changeOutletViewYear(this.value)">${yearOptsHtml2}</select>
+      </span>
     </div>
     <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px">
       <div class="kcard" style="min-width:150px"><div class="klbl">Συνολική Αξία Outlets</div><div class="kval g">${fe(totalValue)}</div></div>
-      <div class="kcard" style="min-width:150px"><div class="klbl">Συνολικές Φθορές</div><div class="kval ${totalDmgQty>0?'r':''}">${fm(totalDmgQty)}</div><div class="ksub">${fe(totalDmgCost)}</div></div>
+      <div class="kcard" style="min-width:150px"><div class="klbl">Συνολικές Φθορές ${viewYear}</div><div class="kval ${totalDmgQty>0?'r':''}">${fm(totalDmgQty)}</div><div class="ksub">${fe(totalDmgCost)}</div></div>
     </div>
     <div class="tw" style="max-height:420px;overflow-y:auto"><table><thead><tr>
       <th>Outlet</th><th>Ομάδα</th><th class="num">Τεμάχια</th><th class="num">Αξία €</th>
@@ -2581,11 +2611,12 @@ function rDash(){
   }
   const whVal = ST.items.reduce((s,i)=>s+wh(i.id)*n(i.price),0);
   const outVal = totalOutletsValue();
-  const dmgCost = ST.damages.reduce((s,d)=>s+n(d.cost),0);
+  const curYear = new Date().getFullYear();
+  const dmgsThisYear = ST.damages.filter(d=>extractYear(d.date)===curYear);
+  const dmgCost = dmgsThisYear.reduce((s,d)=>s+n(d.cost),0);
   const belowPar = ST.items.filter(i=>i.par>0 && totalStock(i.id)<i.par).length;
   const pending = ST.orders.filter(o=>o.status==='Ordered'||o.status==='Partial').length;
   const pendingReq = ST.requests.filter(r=>r.status==='pending').length;
-  const curYear = new Date().getFullYear();
   const ordersThisYear = ST.orders.filter(o=>extractYear(o.date)===curYear);
   const ordersCostYear = ordersThisYear.reduce((s,o)=>s+n(o.cost),0);
   const pendingCost = ST.orders.filter(o=>o.status==='Ordered'||o.status==='Partial').reduce((s,o)=>s+n(o.cost)*(1-(n(o.recQty)/n(o.ordQty||1))),0);
@@ -2594,15 +2625,15 @@ function rDash(){
     <div class="kcard"><div class="klbl">Κάτω από Par</div><div class="kval r">${fm(belowPar)}</div><div class="ksub">χρειάζονται παραγγελία</div></div>
     <div class="kcard"><div class="klbl">Αξία Αποθήκης</div><div class="kval g">${fe(whVal)}</div><div class="ksub">τρέχουσα αξία</div></div>
     <div class="kcard"><div class="klbl">Αξία Outlets</div><div class="kval g">${fe(outVal)}</div><div class="ksub">σύνολο εξοπλισμού</div></div>
-    <div class="kcard"><div class="klbl">Κόστος Φθορών</div><div class="kval w">${fe(dmgCost)}</div><div class="ksub">σύνολο σεζόν</div></div>
+    <div class="kcard"><div class="klbl">Κόστος Φθορών ${curYear}</div><div class="kval w">${fe(dmgCost)}</div><div class="ksub">${dmgsThisYear.length} περιστατικά φέτος</div></div>
     <div class="kcard"><div class="klbl">Παραγγελίες ${curYear}</div><div class="kval i">${fe(ordersCostYear)}</div><div class="ksub">${ordersThisYear.length} παραγγελίες</div></div>
     <div class="kcard"><div class="klbl">Εκκρεμείς Παραγγελίες</div><div class="kval ${pending>0?'w':''}">${fm(pending)}</div><div class="ksub">${fe(pendingCost)} αξία</div></div>
     <div class="kcard"><div class="klbl">Requests</div><div class="kval ${pendingReq>0?'w':''}">${fm(pendingReq)}</div><div class="ksub">εκκρεμή αιτήματα</div></div>
   `;
   renderBudgetCard(curYear, ordersCostYear);
   renderDamagesYearCard(curYear);
-  renderOutletValueDamageTable();
-  renderOutletDamageRateCard();
+  renderOutletValueDamageTable(curYear);
+  renderOutletDamageRateCard(curYear);
   const groupSummary = Object.entries(OUTLET_GROUPS).map(([g,outs])=>{
     const gQty=outs.reduce((s,o)=>s+ST.items.reduce((ss,i)=>ss+outletQty(i.id,o),0),0);
     const gVal=outs.reduce((s,o)=>s+ST.items.reduce((ss,i)=>ss+outletQty(i.id,o)*n(i.price),0),0);
