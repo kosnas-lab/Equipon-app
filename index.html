@@ -2622,6 +2622,7 @@ function reloadStateFromStorage(){
     const raw = localStorage.getItem(SK);
     if(!raw || raw === _lastSavedJSON) return;
     const incoming = JSON.parse(raw);
+    console.log('[BOOT-DEBUG] reloadStateFromStorage() is REPLACING ST. incoming.orders.length:', incoming.orders?incoming.orders.length:'N/A', '| old ST.orders.length:', ST.orders?ST.orders.length:'N/A');
     ST = incoming;
     applyStateDefaults();
     _lastSavedJSON = raw;
@@ -2651,14 +2652,22 @@ _lastSavedJSON = JSON.stringify(ST);
   const fbUpdatedAt = window._fbUpdatedAt || 0;
   const thisSeedVersion = window._seedVersion || 0;
   const seedIsNewer = window._usedSeedData && thisSeedVersion > fbUpdatedAt;
+  console.log('[BOOT-DEBUG] fbReady resolved. _fbInitialData exists:', !!window._fbInitialData,
+    '| orders in it:', window._fbInitialData ? window._fbInitialData.orders.length : 'N/A',
+    '| seedIsNewer:', seedIsNewer, '| usedSeedData:', window._usedSeedData,
+    '| fbUpdatedAt:', fbUpdatedAt, '| thisSeedVersion:', thisSeedVersion);
   if(window._fbInitialData && !seedIsNewer){
     // Cloud data available and at least as fresh as what we booted with — merge it
     ST = window._fbInitialData;
+    console.log('[BOOT-DEBUG] ST assigned from _fbInitialData. ST.orders.length:', ST.orders.length, '| ST===_fbInitialData:', ST===window._fbInitialData);
     applyStateDefaults();
+    console.log('[BOOT-DEBUG] after applyStateDefaults. ST.orders.length:', ST.orders.length);
     migrateLegacyInvoiceDocs();
+    console.log('[BOOT-DEBUG] after migrateLegacyInvoiceDocs() call. ST.orders.length:', ST.orders.length);
     _lastSavedJSON = JSON.stringify(ST);
     try{ localStorage.setItem(SK, _lastSavedJSON); }catch(e){}
     console.log('☁️ Loaded from Firestore');
+    console.log('[BOOT-DEBUG] right after "Loaded from Firestore" log. ST.orders.length:', ST.orders.length, '| SESSION:', SESSION);
     // If already logged in, refresh UI
     if(SESSION){ refreshCurrent(); badges(); }
   } else if(window._usedSeedData){
