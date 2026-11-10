@@ -13,6 +13,92 @@
     const _FB_APIKEY  = 'AIzaSyDkCkS_SfZ8zH26sWNa8bGZ2x5zNNs3rfE';
     const _FB_URL     = 'https://equipon-6cddd-default-rtdb.europe-west1.firebasedatabase.app/equipon';
 
+    // Strips unpaired UTF-16 surrogates (e.g. from a half-corrupted emoji pasted into a text
+    // field) that JSON.stringify() happily includes in its output but which have no valid UTF-8
+    // byte representation — sending them to Firebase produces technically-malformed request
+    // bytes that its parser flat-out rejects with "Invalid data; couldn't parse JSON object,
+    // array, or value.", even though the string looked like well-formed JSON on this end.
+    // Valid surrogate pairs (real emoji etc.) are left untouched.
+    function _stripLoneSurrogates(s){
+      return s
+        .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+        .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+    }
+
+    // ── Invoice photos: synced through their own small Firebase nodes, not the main blob ──────
+    // Invoice photos are kept as full base64 in ST at runtime so every screen renders
+    // inv.photos[i] directly, unchanged. But embedding them straight into the single "state"
+    // value that gets rewritten on every save anywhere in the app eventually exceeds Firebase's
+    // effective write-size limit once enough invoices pile up — confirmed live: a real backup
+    // with many invoices measured ~127MB once serialized, and every fbWrite() of it failed with
+    // HTTP 400. Each photo is instead synced to its own node under invoicePhotos/<id>, and only
+    // a small {__photoRef:id} placeholder travels in the main state — so that write stays tiny
+    // no matter how many invoices/photos accumulate. A session cache avoids re-uploading or
+    // re-downloading a photo already confirmed synced.
+    const _syncedInvoicePhotoIds = new Set();
+    const _invoicePhotoCache = new Map();
+    function _invoicePhotoId(inv, idx){ return inv.id+'_'+idx; }
+
+    function _stripInvoicePhotosForSync(stateObj){
+      if(!stateObj.invoices || !stateObj.invoices.length) return stateObj;
+      let changed = false;
+      const invoices = stateObj.invoices.map(inv=>{
+        if(!inv.photos || !inv.photos.length) return inv;
+        let anyData = false;
+        const photos = inv.photos.map((p,idx)=>{
+          if(p && typeof p==='string' && p.startsWith('data:')){ anyData = true; return {__photoRef:_invoicePhotoId(inv,idx)}; }
+          return p;
+        });
+        if(!anyData) return inv;
+        changed = true;
+        return {...inv, photos};
+      });
+      return changed ? {...stateObj, invoices} : stateObj;
+    }
+
+    // Fire-and-forget per photo — a slow/failed individual photo upload must never block or
+    // fail the main state write, since that's what keeps everything else in the app saving.
+    function _syncInvoicePhotos(stateObj){
+      if(!stateObj.invoices) return;
+      stateObj.invoices.forEach(inv=>{
+        if(!inv.photos) return;
+        inv.photos.forEach((p,idx)=>{
+          if(!p || typeof p!=='string' || !p.startsWith('data:')) return;
+          const id = _invoicePhotoId(inv,idx);
+          if(_syncedInvoicePhotoIds.has(id)) return;
+          _syncedInvoicePhotoIds.add(id); // optimistic, avoids re-upload storms before the PUT resolves
+          _invoicePhotoCache.set(id, p);
+          fetch(`${_FB_URL}/invoicePhotos/${id}.json?auth=${_FB_APIKEY}`, {
+            method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(p)
+          }).catch(()=>{ _syncedInvoicePhotoIds.delete(id); }); // let a later save retry it
+        });
+      });
+    }
+
+    // Replaces {__photoRef:id} placeholders in a freshly-read state with the real photo data
+    // (from cache, or fetched from their own node) so the rest of the app always sees fully
+    // hydrated inv.photos arrays — no other code needs to know this split exists.
+    async function _hydrateInvoicePhotos(stateObj){
+      if(!stateObj || !stateObj.invoices) return stateObj;
+      const fetches = [];
+      stateObj.invoices.forEach(inv=>{
+        if(!inv.photos) return;
+        inv.photos.forEach((p,idx)=>{
+          if(!(p && typeof p==='object' && p.__photoRef)) return;
+          const id = p.__photoRef;
+          if(_invoicePhotoCache.has(id)){ inv.photos[idx] = _invoicePhotoCache.get(id); return; }
+          fetches.push(
+            fetch(`${_FB_URL}/invoicePhotos/${id}.json?auth=${_FB_APIKEY}`)
+              .then(r=>r.ok?r.json():null)
+              .then(data=>{ if(data){ _invoicePhotoCache.set(id,data); inv.photos[idx]=data; _syncedInvoicePhotoIds.add(id); } })
+              .catch(()=>{})
+          );
+        });
+      });
+      if(fetches.length) await Promise.all(fetches);
+      return stateObj;
+    }
+
     // Read from Realtime Database
     async function fbRead(){
       try{
@@ -20,7 +106,8 @@
         if(!r.ok) return null;
         const raw = await r.json();
         if(raw == null) return null;
-        return (typeof raw === 'string') ? JSON.parse(raw) : raw;
+        const parsed = (typeof raw === 'string') ? JSON.parse(raw) : raw;
+        return await _hydrateInvoicePhotos(parsed);
       } catch(e){ console.warn('fbRead error:', e); return null; }
     }
 
@@ -30,8 +117,10 @@
     // _fbWritePending in save()/doFbWrite() further down).
     async function fbWrite(stateObj){
       try{
+        _syncInvoicePhotos(stateObj); // fire-and-forget; doesn't block or fail the main write
+        const lightState = _stripInvoicePhotosForSync(stateObj);
         const data = {
-          state: JSON.stringify(stateObj),
+          state: _stripLoneSurrogates(JSON.stringify(lightState)),
           updatedAt: Date.now()
         };
         const r = await fetch(`${_FB_URL}.json?auth=${_FB_APIKEY}`, {
