@@ -6586,38 +6586,9 @@ function rCount(){
     ${totalDiffs>0 ? `<span style="background:var(--wbg);color:var(--wtxt);padding:6px 12px;border-radius:var(--r)"><b>${totalDiffs}</b> διαφορές που χρειάζονται προσοχή</span>` : ''}
   </div>` : '';
 
-  // Outlet manager: show submit button at bottom
-  let submitBar = '';
-  if(isOutlet() && _curCountPeriod){
-    const outlet = document.getElementById('countOutSel')?.value || SESSION.outlet;
-    const sub = ST.counts[_curCountPeriod].submissions[outlet];
-    const hasEntries = Object.keys(ST.counts[_curCountPeriod].entries).some(k=>k.includes('__'+outlet));
-    if(sub && sub.status==='pending'){
-      submitBar = `<div style="margin-top:16px;padding:14px 16px;background:var(--wbg);border:1px solid var(--wbdr);border-radius:var(--r);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <i class="ti ti-clock" style="color:var(--wtxt);font-size:20px"></i>
-        <div style="flex:1"><div style="font-weight:700;color:var(--wtxt)">Αναμένεται έγκριση F&B Manager</div>
-        <div style="font-size:12px;color:var(--txt2)">Καταχωρήθηκε: ${sub.submittedAt||''}</div></div>
-        <button class="btn bw bsm" onclick="cancelCountSubmission()"><i class="ti ti-edit"></i>Επεξεργασία</button>
-      </div>`;
-    } else if(sub && sub.status==='approved'){
-      submitBar = `<div style="margin-top:16px;padding:14px 16px;background:var(--obg);border:1px solid var(--obdr);border-radius:var(--r);display:flex;align-items:center;gap:12px">
-        <i class="ti ti-circle-check" style="color:var(--otxt);font-size:20px"></i>
-        <div><div style="font-weight:700;color:var(--otxt)">✓ Εγκρίθηκε από τον F&B Manager</div>
-        <div style="font-size:12px;color:var(--txt2)">Εγκρίθηκε: ${sub.approvedAt||''}</div></div>
-      </div>`;
-    } else if(hasEntries){
-      submitBar = `<div style="margin-top:16px;text-align:center">
-        <button class="btn bi" style="height:44px;padding:0 28px;font-size:14px" onclick="submitCountForOutlet()">
-          <i class="ti ti-send"></i>Καταχώρηση Απογραφής
-        </button>
-        <div style="font-size:11.5px;color:var(--txt2);margin-top:8px">Αφού πατήσετε καταχώρηση, η απογραφή θα σταλεί για έγκριση στον F&B Manager</div>
-      </div>`;
-    } else {
-      submitBar = `<div style="margin-top:16px;text-align:center;color:var(--txt2);font-size:13px">
-        <i class="ti ti-info-circle"></i> Συμπληρώστε τις ποσότητες παραπάνω και στη συνέχεια πατήστε "Καταχώρηση"
-      </div>`;
-    }
-  }
+  // Outlet manager: show submit button at bottom — wrapped in its own container (below) so a
+  // blur-triggered edit can refresh just this bar without rebuilding the whole item table.
+  const submitBar = `<div id="countSubmitBar">${computeCountSubmitBar()}</div>`;
 
   // FB manager: show pending submissions for review
   let pendingReviewHtml = '';
@@ -6762,6 +6733,45 @@ function rCount(){
     ) + submitBar + pendingReviewHtml + netLossHtml;
 }
 
+// Outlet manager's submit bar at the bottom of a count — pulled out of rCount() so it can be
+// recomputed and patched into #countSubmitBar on its own after a blur-triggered save, without
+// rebuilding the whole (possibly huge, photo-laden) item table just to make the submit button
+// appear once the first quantity is entered.
+function computeCountSubmitBar(){
+  if(!(isOutlet() && _curCountPeriod)) return '';
+  const outlet = document.getElementById('countOutSel')?.value || SESSION.outlet;
+  const sub = ST.counts[_curCountPeriod].submissions[outlet];
+  const hasEntries = Object.keys(ST.counts[_curCountPeriod].entries).some(k=>k.includes('__'+outlet));
+  if(sub && sub.status==='pending'){
+    return `<div style="margin-top:16px;padding:14px 16px;background:var(--wbg);border:1px solid var(--wbdr);border-radius:var(--r);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <i class="ti ti-clock" style="color:var(--wtxt);font-size:20px"></i>
+      <div style="flex:1"><div style="font-weight:700;color:var(--wtxt)">Αναμένεται έγκριση F&B Manager</div>
+      <div style="font-size:12px;color:var(--txt2)">Καταχωρήθηκε: ${sub.submittedAt||''}</div></div>
+      <button class="btn bw bsm" onclick="cancelCountSubmission()"><i class="ti ti-edit"></i>Επεξεργασία</button>
+    </div>`;
+  } else if(sub && sub.status==='approved'){
+    return `<div style="margin-top:16px;padding:14px 16px;background:var(--obg);border:1px solid var(--obdr);border-radius:var(--r);display:flex;align-items:center;gap:12px">
+      <i class="ti ti-circle-check" style="color:var(--otxt);font-size:20px"></i>
+      <div><div style="font-weight:700;color:var(--otxt)">✓ Εγκρίθηκε από τον F&B Manager</div>
+      <div style="font-size:12px;color:var(--txt2)">Εγκρίθηκε: ${sub.approvedAt||''}</div></div>
+    </div>`;
+  } else if(hasEntries){
+    return `<div style="margin-top:16px;text-align:center">
+      <button class="btn bi" style="height:44px;padding:0 28px;font-size:14px" onclick="submitCountForOutlet()">
+        <i class="ti ti-send"></i>Καταχώρηση Απογραφής
+      </button>
+      <div style="font-size:11.5px;color:var(--txt2);margin-top:8px">Αφού πατήσετε καταχώρηση, η απογραφή θα σταλεί για έγκριση στον F&B Manager</div>
+    </div>`;
+  }
+  return `<div style="margin-top:16px;text-align:center;color:var(--txt2);font-size:13px">
+    <i class="ti ti-info-circle"></i> Συμπληρώστε τις ποσότητες παραπάνω και στη συνέχεια πατήστε "Καταχώρηση"
+  </div>`;
+}
+function refreshCountSubmitBar(){
+  const el = document.getElementById('countSubmitBar');
+  if(el) el.innerHTML = computeCountSubmitBar();
+}
+
 // Writes the typed value into the data model right away (no re-render) so a background sync
 // mid-typing can never wipe out a quantity that hasn't been blurred yet.
 // `persist` controls whether this call does the expensive full-ST save (JSON.stringify +
@@ -6793,11 +6803,13 @@ function liveCountEntry(itemId, outlet, val){
 }
 // Fires on blur — persists for real, but deliberately does NOT call rCount() (which would
 // rebuild the entire multi-outlet table, possibly thousands of rows with photos, from scratch)
-// since the live diff span is already updated on every keystroke by updateLiveDiff() above. The
-// per-outlet "X/Y καταχωρημένα" summary just goes stale until the view next re-renders for some
-// other reason (switching outlet/period, searching) — a worthwhile trade for not crashing.
+// since the live diff span is already updated on every keystroke by updateLiveDiff() above.
+// refreshCountSubmitBar() patches just the submit button at the bottom instead — cheap, and
+// means the button actually appears as soon as the first quantity is entered, not only after
+// some other full re-render happens to fire later.
 function setCountEntry(itemId, outlet, val){
   _writeCountEntry(itemId, outlet, val, true);
+  refreshCountSubmitBar();
 }
 
 function updateLiveDiff(spanId, sysQty, val){
