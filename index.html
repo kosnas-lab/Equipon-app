@@ -11362,10 +11362,12 @@ function readInvoiceDocFile(file, cb){
 }
 
 // Invoices saved before the IndexedDB migration above still carry their PDF/HTML attachment
-// as a raw data: URI directly inside inv.docs[] (several MB each) instead of the lightweight
+// embedded directly inside inv.docs[] (several MB each) instead of the lightweight
 // {id,name,type} reference every invoice gets today — confirmed live: a handful of these
 // legacy entries alone added tens of MB to the synced state, which is what kept pushing every
-// Firebase save over its size limit even after invoice PHOTOS were offloaded separately.
+// Firebase save over its size limit even after invoice PHOTOS were offloaded separately. Two
+// legacy shapes have actually been seen in the wild: a bare data: URI string, and an older
+// {name,type,data:"data:..."} object — both are handled here.
 // Moves any such entry into IndexedDB in place, replacing it with the normal reference, so it
 // stops being re-embedded in every save from here on. Runs in the background; never blocks boot.
 async function migrateLegacyInvoiceDocs(){
@@ -11375,14 +11377,22 @@ async function migrateLegacyInvoiceDocs(){
     if(!inv.docs || !inv.docs.length) continue;
     for(let i=0;i<inv.docs.length;i++){
       const d = inv.docs[i];
-      if(typeof d !== 'string' || !d.startsWith('data:')) continue;
+      let dataUri, origName, origType;
+      if(typeof d === 'string' && d.startsWith('data:')){
+        dataUri = d;
+      } else if(d && typeof d === 'object' && typeof d.data === 'string' && d.data.startsWith('data:')){
+        dataUri = d.data; origName = d.name; origType = d.type;
+      } else {
+        continue;
+      }
       try{
-        const blob = await (await fetch(d)).blob();
+        const blob = await (await fetch(dataUri)).blob();
         const id = 'DOC-LEGACY-'+inv.id+'-'+i;
-        const mimeMatch = d.match(/^data:([^;]+);/);
-        const type = mimeMatch ? mimeMatch[1] : 'application/pdf';
+        const mimeMatch = dataUri.match(/^data:([^;]+);/);
+        const type = origType || (mimeMatch ? mimeMatch[1] : 'application/pdf');
+        const name = origName || (inv.supplier||inv.id)+(inv.number?' - '+inv.number:'');
         await invDocPut(id, blob);
-        inv.docs[i] = { id, name: (inv.supplier||inv.id)+(inv.number?' - '+inv.number:''), type };
+        inv.docs[i] = { id, name, type };
         migrated = true;
       } catch(e){ console.warn('Αποτυχία μετεγκατάστασης συνημμένου:', inv.id, e); }
     }
