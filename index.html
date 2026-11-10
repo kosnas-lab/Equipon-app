@@ -20,8 +20,6 @@
         if(!r.ok) return null;
         const raw = await r.json();
         if(raw == null) return null;
-        // Back-compat: data written before the object-storage migration below is a single
-        // JSON-encoded string; data written after is already a proper nested object.
         return (typeof raw === 'string') ? JSON.parse(raw) : raw;
       } catch(e){ console.warn('fbRead error:', e); return null; }
     }
@@ -30,16 +28,10 @@
     // apart from a successful one — a silent failure here used to look identical to success,
     // which let the 15s poll below overwrite fresh local edits with stale server data (see
     // _fbWritePending in save()/doFbWrite() further down).
-    //
-    // `state` is sent as a nested object, not a JSON.stringify()'d string — Firebase RTDB caps
-    // the size of a single string VALUE (~10MB), and stringifying the whole app state into one
-    // value hit that cap once invoices/PM data with embedded photos grew large enough, causing
-    // every write to fail with HTTP 400. Sending a real object instead spreads the data across
-    // many small leaf values (individual fields/photos), none of which approach that limit.
     async function fbWrite(stateObj){
       try{
         const data = {
-          state: stateObj,
+          state: JSON.stringify(stateObj),
           updatedAt: Date.now()
         };
         const r = await fetch(`${_FB_URL}.json?auth=${_FB_APIKEY}`, {
@@ -47,7 +39,10 @@
           headers: {'Content-Type':'application/json'},
           body: JSON.stringify(data)
         });
-        if(!r.ok) throw new Error('HTTP '+r.status);
+        if(!r.ok){
+          const body = await r.text().catch(()=>'(no body)');
+          throw new Error('HTTP '+r.status+' — '+body);
+        }
         return true;
       } catch(e){ console.warn('fbWrite error:', e); return false; }
     }
