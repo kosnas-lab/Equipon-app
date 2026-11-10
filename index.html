@@ -75,28 +75,50 @@
       });
     }
 
-    // Replaces {__photoRef:id} placeholders in a freshly-read state with the real photo data
-    // (from cache, or fetched from their own node) so the rest of the app always sees fully
-    // hydrated inv.photos arrays — no other code needs to know this split exists.
-    async function _hydrateInvoicePhotos(stateObj){
+    // Synchronous, no-network substitution of {__photoRef:id} placeholders using whatever is
+    // already in the session cache. Used on every fbRead() so boot/poll stay fast regardless of
+    // invoice count — resolving a placeholder that ISN'T cached yet needs an actual fetch, which
+    // is done lazily and scoped (see hydrateInvoicesLazy below), never for the whole dataset at
+    // once. Mutating in place here also keeps a cached vs. not-yet-cached placeholder comparing
+    // identically between two reads, so the 15s poll doesn't treat "still unresolved" as a change.
+    function _fillInvoicePhotosFromCache(stateObj){
       if(!stateObj || !stateObj.invoices) return stateObj;
-      const fetches = [];
       stateObj.invoices.forEach(inv=>{
+        if(!inv.photos) return;
+        inv.photos.forEach((p,idx)=>{
+          if(p && typeof p==='object' && p.__photoRef && _invoicePhotoCache.has(p.__photoRef)){
+            inv.photos[idx] = _invoicePhotoCache.get(p.__photoRef);
+          }
+        });
+      });
+      return stateObj;
+    }
+
+    // Resolves {__photoRef:id} placeholders for a SPECIFIC (small) set of invoices — the ones
+    // currently being rendered — not the whole dataset. With hundreds of invoices, fetching every
+    // photo on every boot doesn't scale (hundreds of requests, queued behind the browser's
+    // per-origin connection limit) and was the direct cause of invoices appearing to vanish: the
+    // app kept waiting on that instead of ever finishing. Returns true if anything was resolved,
+    // so the caller knows whether a re-render is worth doing.
+    async function hydrateInvoicesLazy(invoiceList){
+      let any = false;
+      const fetches = [];
+      (invoiceList||[]).forEach(inv=>{
         if(!inv.photos) return;
         inv.photos.forEach((p,idx)=>{
           if(!(p && typeof p==='object' && p.__photoRef)) return;
           const id = p.__photoRef;
-          if(_invoicePhotoCache.has(id)){ inv.photos[idx] = _invoicePhotoCache.get(id); return; }
+          if(_invoicePhotoCache.has(id)){ inv.photos[idx] = _invoicePhotoCache.get(id); any = true; return; }
           fetches.push(
             fetch(`${_FB_URL}/invoicePhotos/${id}.json?auth=${_FB_APIKEY}`)
               .then(r=>r.ok?r.json():null)
-              .then(data=>{ if(data){ _invoicePhotoCache.set(id,data); inv.photos[idx]=data; _syncedInvoicePhotoIds.add(id); } })
+              .then(data=>{ if(data){ _invoicePhotoCache.set(id,data); inv.photos[idx]=data; _syncedInvoicePhotoIds.add(id); any = true; } })
               .catch(()=>{})
           );
         });
       });
       if(fetches.length) await Promise.all(fetches);
-      return stateObj;
+      return any;
     }
 
     // Read from Realtime Database
@@ -107,7 +129,7 @@
         const raw = await r.json();
         if(raw == null) return null;
         const parsed = (typeof raw === 'string') ? JSON.parse(raw) : raw;
-        return await _hydrateInvoicePhotos(parsed);
+        return _fillInvoicePhotosFromCache(parsed);
       } catch(e){ console.warn('fbRead error:', e); return null; }
     }
 
@@ -11203,6 +11225,13 @@ function rInvoices(){
       </div>
     </div>`;
   }).join('') : '<div class="es"><i class="ti ti-receipt"></i>Δεν υπάρχουν αποθηκευμένα τιμολόγια</div>';
+
+  // Any photo still shown as a {__photoRef} placeholder above (not yet in this session's
+  // cache) is resolved now, scoped to just this filtered page — not the whole invoice
+  // archive — then the list alone is re-rendered once real data is in.
+  if(!lightMode && fi.length){
+    hydrateInvoicesLazy(fi).then(changed=>{ if(changed && _invcTab!=='pricecompare') rInvoices(); });
+  }
 }
 
 function rInvoicePriceCompare(){
@@ -11616,6 +11645,9 @@ function openInvoiceView(id){
   const inv = ST.invoices.find(x=>x.id===id); if(!inv) return;
   _invViewingId = id;
   renderInvoiceViewBody(inv);
+  // Resolves this one invoice's photos if they're still {__photoRef} placeholders — scoped to
+  // just what's being looked at, not the whole archive — then redraws once real data is in.
+  hydrateInvoicesLazy([inv]).then(changed=>{ if(changed && _invViewingId===id) renderInvoiceViewBody(inv); });
   document.getElementById('invDeleteBtn').style.display = '';
   document.getElementById('invEditBtn').style.display = '';
   document.getElementById('invSaveEditBtn').style.display = 'none';
