@@ -2629,6 +2629,7 @@ _lastSavedJSON = JSON.stringify(ST);
     // Cloud data available and at least as fresh as what we booted with — merge it
     ST = window._fbInitialData;
     applyStateDefaults();
+    migrateLegacyInvoiceDocs();
     _lastSavedJSON = JSON.stringify(ST);
     try{ localStorage.setItem(SK, _lastSavedJSON); }catch(e){}
     console.log('☁️ Loaded from Firestore');
@@ -11360,6 +11361,35 @@ function readInvoiceDocFile(file, cb){
   });
 }
 
+// Invoices saved before the IndexedDB migration above still carry their PDF/HTML attachment
+// as a raw data: URI directly inside inv.docs[] (several MB each) instead of the lightweight
+// {id,name,type} reference every invoice gets today — confirmed live: a handful of these
+// legacy entries alone added tens of MB to the synced state, which is what kept pushing every
+// Firebase save over its size limit even after invoice PHOTOS were offloaded separately.
+// Moves any such entry into IndexedDB in place, replacing it with the normal reference, so it
+// stops being re-embedded in every save from here on. Runs in the background; never blocks boot.
+async function migrateLegacyInvoiceDocs(){
+  if(!ST.invoices) return;
+  let migrated = false;
+  for(const inv of ST.invoices){
+    if(!inv.docs || !inv.docs.length) continue;
+    for(let i=0;i<inv.docs.length;i++){
+      const d = inv.docs[i];
+      if(typeof d !== 'string' || !d.startsWith('data:')) continue;
+      try{
+        const blob = await (await fetch(d)).blob();
+        const id = 'DOC-LEGACY-'+inv.id+'-'+i;
+        const mimeMatch = d.match(/^data:([^;]+);/);
+        const type = mimeMatch ? mimeMatch[1] : 'application/pdf';
+        await invDocPut(id, blob);
+        inv.docs[i] = { id, name: (inv.supplier||inv.id)+(inv.number?' - '+inv.number:''), type };
+        migrated = true;
+      } catch(e){ console.warn('Αποτυχία μετεγκατάστασης συνημμένου:', inv.id, e); }
+    }
+  }
+  if(migrated) sch();
+}
+
 function handleInvoiceFiles(fileList){
   Array.from(fileList).forEach(f => {
     if(isInvoiceDocFile(f)) readInvoiceDocFile(f, doc => addInvoiceDocPreview(doc));
@@ -12239,6 +12269,7 @@ function importAllData(input){
       const data = JSON.parse(e.target.result);
       ST = data;
       applyStateDefaults();
+      migrateLegacyInvoiceDocs();
       save();
       refreshCurrent();
       badges();
