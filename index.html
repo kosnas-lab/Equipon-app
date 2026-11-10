@@ -124,7 +124,11 @@
     // Read from Realtime Database
     async function fbRead(){
       try{
-        const r = await fetch(`${_FB_URL}/state.json?auth=${_FB_APIKEY}`);
+        // no-store: a plain fetch() to this exact same URL every time is a perfect browser
+        // HTTP-cache key — without this, a reload can silently keep serving an old cached
+        // response instead of asking Firebase again, making every later successful save look
+        // like it never happened on the very next load.
+        const r = await fetch(`${_FB_URL}/state.json?auth=${_FB_APIKEY}`, {cache:'no-store'});
         if(!r.ok) return null;
         const raw = await r.json();
         if(raw == null) return null;
@@ -163,7 +167,7 @@
     function startFbPoll(){
       setInterval(async ()=>{
         try{
-          const r = await fetch(`${_FB_URL}/updatedAt.json?auth=${_FB_APIKEY}`);
+          const r = await fetch(`${_FB_URL}/updatedAt.json?auth=${_FB_APIKEY}`, {cache:'no-store'});
           if(!r.ok) return;
           const ts = parseInt(await r.json()||0);
           if(ts > _fbLastUpdate && ts > 0){
@@ -194,7 +198,7 @@
     // stale one from an older, disconnected session.
     window._fbReady = Promise.all([
       fbRead(),
-      fetch(`${_FB_URL}/updatedAt.json?auth=${_FB_APIKEY}`).then(r=>r.ok?r.json():null).catch(()=>null)
+      fetch(`${_FB_URL}/updatedAt.json?auth=${_FB_APIKEY}`, {cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null)
     ]).then(([data, updatedAt]) => {
       if(data) window._fbInitialData = data;
       window._fbUpdatedAt = parseInt(updatedAt) || 0;
