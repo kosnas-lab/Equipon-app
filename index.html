@@ -2567,15 +2567,18 @@ let _fbWriteFailCount = 0;
 
 let _lsQuotaWarned = false;
 function save(){
-  const json = JSON.stringify(ST);
-  // Always keep localStorage as offline fallback. If this throws (quota exceeded — easy to
-  // hit once enough item/loaner photos pile up, since everything lives in one JSON blob),
-  // _lastSavedJSON must NOT be updated to match: it's compared against the actual on-disk
-  // localStorage content by reloadStateFromStorage()'s 3s cross-tab poll, and if it were
-  // updated here despite the write failing, the very next poll would see raw (old, still
-  // missing this edit) !== _lastSavedJSON (new) and "helpfully" overwrite the correct
-  // in-memory ST with the stale on-disk copy — visible as an edit reverting within a few
-  // seconds of saving, deterministically, every time, until the quota problem is resolved.
+  // Invoice photos stay full-size in the live ST (every screen renders them directly), but
+  // localStorage's quota (~5-10MB) is a different, much smaller limit than Firebase's — with
+  // enough invoice photos the full JSON routinely exceeds it, same as it did for Firebase
+  // before that was fixed separately. Strip the same way before writing here too.
+  const json = JSON.stringify(_stripInvoicePhotosForSync(ST));
+  // Always keep localStorage as offline fallback. If this throws (quota exceeded), _lastSavedJSON
+  // must NOT be updated to match: it's compared against the actual on-disk localStorage content
+  // by reloadStateFromStorage()'s 3s cross-tab poll, and if it were updated here despite the
+  // write failing, the very next poll would see raw (old, still missing this edit) !==
+  // _lastSavedJSON (new) and "helpfully" overwrite the correct in-memory ST with the stale
+  // on-disk copy — visible as an edit reverting within a few seconds of saving, deterministically,
+  // every time, until the quota problem is resolved.
   let localOk = true;
   try{ localStorage.setItem(SK, json); }
   catch(e){
@@ -2621,8 +2624,10 @@ function reloadStateFromStorage(){
   try{
     const raw = localStorage.getItem(SK);
     if(!raw || raw === _lastSavedJSON) return;
-    const incoming = JSON.parse(raw);
-    console.log('[BOOT-DEBUG] reloadStateFromStorage() is REPLACING ST. incoming.orders.length:', incoming.orders?incoming.orders.length:'N/A', '| old ST.orders.length:', ST.orders?ST.orders.length:'N/A');
+    // localStorage holds invoice photos as {__photoRef} placeholders (see save()) — fill in
+    // whatever this session already has cached so an already-viewed photo doesn't flash back
+    // to a broken placeholder just because another tab's edit pulled in a fresh copy of ST.
+    const incoming = _fillInvoicePhotosFromCache(JSON.parse(raw));
     ST = incoming;
     applyStateDefaults();
     _lastSavedJSON = raw;
@@ -2652,22 +2657,19 @@ _lastSavedJSON = JSON.stringify(ST);
   const fbUpdatedAt = window._fbUpdatedAt || 0;
   const thisSeedVersion = window._seedVersion || 0;
   const seedIsNewer = window._usedSeedData && thisSeedVersion > fbUpdatedAt;
-  console.log('[BOOT-DEBUG] fbReady resolved. _fbInitialData exists:', !!window._fbInitialData,
-    '| orders in it:', window._fbInitialData ? window._fbInitialData.orders.length : 'N/A',
-    '| seedIsNewer:', seedIsNewer, '| usedSeedData:', window._usedSeedData,
-    '| fbUpdatedAt:', fbUpdatedAt, '| thisSeedVersion:', thisSeedVersion);
   if(window._fbInitialData && !seedIsNewer){
     // Cloud data available and at least as fresh as what we booted with — merge it
     ST = window._fbInitialData;
-    console.log('[BOOT-DEBUG] ST assigned from _fbInitialData. ST.orders.length:', ST.orders.length, '| ST===_fbInitialData:', ST===window._fbInitialData);
     applyStateDefaults();
-    console.log('[BOOT-DEBUG] after applyStateDefaults. ST.orders.length:', ST.orders.length);
     migrateLegacyInvoiceDocs();
-    console.log('[BOOT-DEBUG] after migrateLegacyInvoiceDocs() call. ST.orders.length:', ST.orders.length);
-    _lastSavedJSON = JSON.stringify(ST);
-    try{ localStorage.setItem(SK, _lastSavedJSON); }catch(e){}
+    // Same quota-safe pattern as save(): strip invoice photos before writing to localStorage
+    // (a much smaller quota than Firebase's), and only update _lastSavedJSON if the write
+    // actually landed — otherwise the 3s cross-tab poll below reads back the old on-disk
+    // value, sees it differ from the (unwritten) new _lastSavedJSON, and "helpfully"
+    // clobbers this correct in-memory ST with that stale data a moment after a correct boot.
+    const lightJson = JSON.stringify(_stripInvoicePhotosForSync(ST));
+    try{ localStorage.setItem(SK, lightJson); _lastSavedJSON = lightJson; }catch(e){}
     console.log('☁️ Loaded from Firestore');
-    console.log('[BOOT-DEBUG] right after "Loaded from Firestore" log. ST.orders.length:', ST.orders.length, '| SESSION:', SESSION);
     // If already logged in, refresh UI
     if(SESSION){ refreshCurrent(); badges(); }
   } else if(window._usedSeedData){
