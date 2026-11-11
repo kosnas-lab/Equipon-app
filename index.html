@@ -808,6 +808,7 @@ tr.totals-row td{font-weight:700;background:var(--bg2);border-top:2px solid var(
       </select>
       <button class="btn" id="btnPriceAdj" onclick="openPriceAdjModal()" title="Μαζική αναπροσαρμογή τιμών με ποσοστό" style="white-space:nowrap;border-color:var(--ibdr);color:var(--itxt);display:none"><i class="ti ti-percentage"></i>Αναπροσαρμογή Τιμών</button>
       <button class="btn" id="btnExportNeeds" onclick="exportInventoryNeedsXLSX()" title="Excel με κωδικό, περιγραφή, τρέχον σύνολο, τιμή και κενό κελί για τις ανάγκες της επόμενης χρονιάς — βάσει της τρέχουσας λίστας/φίλτρων" style="white-space:nowrap;border-color:var(--ibdr);color:var(--itxt);display:none"><i class="ti ti-file-spreadsheet"></i>Εξαγωγή Αναγκών Παραγγελίας</button>
+      <button class="btn" id="btnExportStock" onclick="exportInventoryStockXLSX()" title="Excel με κωδικό, περιγραφή, τιμή, outlets, ποσότητες αποθήκης/outlets/συνόλου, par stock και προτεινόμενη ποσότητα παραγγελίας — βάσει της τρέχουσας λίστας/φίλτρων" style="white-space:nowrap;border-color:var(--ibdr);color:var(--itxt);display:none"><i class="ti ti-file-spreadsheet"></i>Εξαγωγή Αποθεμάτων</button>
     </div>
     <div class="card"><div class="tw">
       <table><thead><tr>
@@ -4258,6 +4259,8 @@ function rInv(){
   if(btnAdj) btnAdj.style.display = isFB() ? '' : 'none';
   const btnExportNeeds = document.getElementById('btnExportNeeds');
   if(btnExportNeeds) btnExportNeeds.style.display = isFB() ? '' : 'none';
+  const btnExportStock = document.getElementById('btnExportStock');
+  if(btnExportStock) btnExportStock.style.display = isFB() ? '' : 'none';
   const q = (document.getElementById('invQ').value||'').toLowerCase();
   const cat = document.getElementById('invCat').value;
   const outF = document.getElementById('invOutFlt').value;
@@ -4398,6 +4401,72 @@ async function exportInventoryNeedsXLSX(){
     const a = document.createElement('a');
     a.href = url;
     a.download = `Ανάγκες Παραγγελίας ${nextYear}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 10000);
+    toast('Το αρχείο Excel κατέβηκε ✓');
+  }catch(err){
+    console.error(err);
+    toast('Σφάλμα κατά τη δημιουργία του Excel','warn');
+  }
+}
+
+// Full stock-position export for the current Inventory list/filters — κωδικός, περιγραφή,
+// τιμή, ποια outlets το χρησιμοποιούν, ποσότητες αποθήκης/outlets/συνόλου, par stock, και
+// προτεινόμενη ποσότητα παραγγελίας (πόσο λείπει μέχρι το par). Every column centered + wrap
+// text, as asked, rather than the left-aligned wrap used in the other exports above.
+async function exportInventoryStockXLSX(){
+  if(typeof ExcelJS==='undefined'){ toast('Χρειάζεται σύνδεση στο internet για λήψη σε Excel','warn'); return; }
+  const items = _invFilteredItems;
+  if(!items.length){ toast('Δεν βρέθηκαν κωδικοί για εξαγωγή','warn'); return; }
+
+  toast('Δημιουργία αρχείου Excel...');
+  try{
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Αποθέματα');
+    ws.columns = [
+      { header: 'Κωδικός', key: 'id', width: 14 },
+      { header: 'Περιγραφή', key: 'desc', width: 38 },
+      { header: 'Τιμή €', key: 'price', width: 11 },
+      { header: 'Outlets που το χρησιμοποιούν', key: 'outlets', width: 36 },
+      { header: 'Ποσότητα Αποθήκης', key: 'wh', width: 16 },
+      { header: 'Ποσότητα Outlets', key: 'outQty', width: 16 },
+      { header: 'Συνολική Ποσότητα Ξενοδοχείου', key: 'total', width: 20 },
+      { header: 'Par Stock', key: 'par', width: 12 },
+      { header: 'Προτεινόμενη Ποσότητα Παραγγελίας', key: 'suggested', width: 20 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    const centerWrap = { horizontal:'center', vertical:'middle', wrapText:true };
+    ws.getRow(1).alignment = centerWrap;
+    ws.columns.forEach(c => c.alignment = centerWrap);
+
+    items.forEach((it,idx)=>{
+      const rowNum = idx+2;
+      const row = ws.getRow(rowNum);
+      const chargedOutlets = OUTLETS_NO_WH().filter(o=>outletQty(it.id,o)>0);
+      const whQty = wh(it.id), outQty = totalOutlets(it.id), total = whQty+outQty;
+      const par = n(it.par);
+      row.getCell('id').value = it.id;
+      row.getCell('desc').value = it.desc || '';
+      row.getCell('price').value = n(it.price);
+      row.getCell('outlets').value = chargedOutlets.length
+        ? chargedOutlets.map(o=>`${o}: ${outletQty(it.id,o)}`).join(', ')
+        : '—';
+      row.getCell('wh').value = whQty;
+      row.getCell('outQty').value = outQty;
+      row.getCell('total').value = total;
+      row.getCell('par').value = par;
+      row.getCell('suggested').value = Math.max(0, par - total);
+      row.height = 50;
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Αποθέματα.xlsx';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
