@@ -4425,7 +4425,9 @@ async function exportInventoryStockXLSX(){
   try{
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Αποθέματα');
+    const PHOTO_COL_W = 11, ROW_H = 60; // character-units / points — see cell-pixel estimate below
     ws.columns = [
+      { header: 'Φωτο', key: 'photo', width: PHOTO_COL_W },
       { header: 'Κωδικός', key: 'id', width: 14 },
       { header: 'Περιγραφή', key: 'desc', width: 38 },
       { header: 'Τιμή €', key: 'price', width: 11 },
@@ -4440,6 +4442,23 @@ async function exportInventoryStockXLSX(){
     const centerWrap = { horizontal:'center', vertical:'middle', wrapText:true };
     ws.getRow(1).alignment = centerWrap;
     ws.columns.forEach(c => c.alignment = centerWrap);
+
+    // Excel's column-width unit and row-height (points) don't map 1:1 to pixels, but these are
+    // the standard approximations (~7px per width unit at the default font, 4/3 px per point) —
+    // close enough to center a thumbnail inside the cell rather than stretching it to fill it
+    // (which is what tl/br-anchored images do, and distorts anything not already square).
+    const cellPxW = PHOTO_COL_W*7 + 5, cellPxH = ROW_H*4/3;
+    const MAX_THUMB_PX = Math.min(cellPxW, cellPxH) - 6;
+    const naturalSize = (dataUrl) => new Promise(resolve=>{
+      const img = new Image();
+      img.onload = () => resolve({w:img.naturalWidth||1, h:img.naturalHeight||1});
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+    const dimsById = {};
+    await Promise.all(items.filter(it=>it.photo && it.photo.startsWith('data:image/')).map(async it=>{
+      dimsById[it.id] = await naturalSize(it.photo);
+    }));
 
     items.forEach((it,idx)=>{
       const rowNum = idx+2;
@@ -4458,7 +4477,19 @@ async function exportInventoryStockXLSX(){
       row.getCell('total').value = total;
       row.getCell('par').value = par;
       row.getCell('suggested').value = Math.max(0, par - total);
-      row.height = 50;
+      row.height = ROW_H;
+      const dims = dimsById[it.id];
+      if(dims){
+        const scale = MAX_THUMB_PX / Math.max(dims.w, dims.h);
+        const drawW = dims.w*scale, drawH = dims.h*scale;
+        const fracCol = Math.max(0, (cellPxW-drawW)/2) / cellPxW;
+        const fracRow = Math.max(0, (cellPxH-drawH)/2) / cellPxH;
+        const imgId = wb.addImage({ base64: it.photo, extension: 'jpeg' });
+        ws.addImage(imgId, {
+          tl: { col: fracCol, row: (rowNum-1)+fracRow },
+          ext: { width: drawW, height: drawH }
+        });
+      }
     });
 
     const buffer = await wb.xlsx.writeBuffer();
