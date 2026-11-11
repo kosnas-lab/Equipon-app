@@ -6004,8 +6004,13 @@ function setOrderDateField(orderId, field, val){
 function exportOrdersCsv(){
   const orders = ST.orders.filter(o=>!ST.items.find(i=>i.id===o.itemId)?.isLinen && !ST.items.find(i=>i.id===o.itemId)?.isPM);
   if(!orders.length){ toast('Δεν υπάρχουν παραγγελίες εξοπλισμού για export','warn'); return; }
-  const rows = [['Κωδικός','Περιγραφή','Τιμή','Προμηθευτής','Ποσότητα Παραγγελίας']];
-  orders.forEach(o=> rows.push([o.itemId, o.desc||'', n(o.price).toFixed(2), o.supplier||'', o.ordQty]));
+  const rows = [['Κωδικός','Περιγραφή','Τιμή','Προμηθευτής','Ποσότητα Παραγγελίας','Ποσότητα σε Outlets','Ποσότητα Αποθήκης','Συνολική Ποσότητα Ξενοδοχείου','Outlets που το χρησιμοποιούν']];
+  orders.forEach(o=>{
+    const chargedOutlets = OUTLETS_NO_WH().filter(ou=>outletQty(o.itemId,ou)>0);
+    rows.push([o.itemId, o.desc||'', n(o.price).toFixed(2), o.supplier||'', o.ordQty,
+      totalOutlets(o.itemId), wh(o.itemId), totalStock(o.itemId),
+      chargedOutlets.length ? chargedOutlets.map(ou=>`${ou}: ${outletQty(o.itemId,ou)}`).join(', ') : '—']);
+  });
   const csv = rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(';')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}));
